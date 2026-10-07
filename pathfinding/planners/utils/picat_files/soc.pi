@@ -1,0 +1,148 @@
+import sat.
+import aux.
+
+main([InstanceFile]) =>
+    printf("Solving %w instance file\n", InstanceFile),
+    load(InstanceFile),
+    Instance =  get_instance(),
+    time((Plans, Final_Cost) = find_plans(Instance)),
+    output(Plans, Final_Cost).
+
+find_plans(Instance) = (Plans, Pes_LB_soc + Delta) =>
+    (N,E) = create_graph(Instance),
+    Agents = get_agents(Instance),
+    
+    Opt_LB = get_optimistic_mks(Agents) + 1,
+    Pes_LB = get_pessimistic_mks(Agents) + 1,
+    Pes_LB_soc = get_pessimistic_soc(Agents) + len(Agents),
+
+    printf("LB opt - %w, pes - %w\n", Opt_LB, Pes_LB),
+    printf("SOC LB pes - %w\n", Pes_LB_soc),
+
+    between(0, 9999999, Delta),
+
+    printf("Building formula using delta %w\n", Delta),
+    Plans = create_formula(N, E, Agents, Opt_LB, Pes_LB, Delta),
+    printf("SAT solver started\n"),
+    solve(Plans).
+
+
+create_formula(N, E, Agents, Opt_LB, Pes_LB, Delta) = At =>
+    Makespan = Pes_LB + Delta,
+    K = len(Agents),
+
+    At = new_array(Makespan,K,N),
+    Pass = new_array(Makespan - 1,K,E),
+
+    % Initialize the first and last states
+    foreach (A in 1..K)    
+        (Start,Goal) = Agents[A],
+        At[1,A,Start] = 1,
+
+        pessimistic_path_cost((Start,Goal),Cost),
+        At[Cost+Delta+1,A,Goal] = 1,
+        foreach(T in Cost+Delta+1..Makespan, V in 1..N)
+            if V !== Goal then
+                At[T,A,V] = 0
+            else
+                At[T,A,V] = 1
+            end
+        end,
+
+        preprocess_soc(At, Pass, Makespan, Delta, Agents, N, E)
+    end,
+
+    At :: 0..1,
+    Pass :: 0..1,
+
+    % printf("At: %w\n",At),
+    % printf("Pass: %w\n",Pass),
+
+    % CONFLICTS
+
+    % vertex conflict
+    foreach(T in 1..Makespan, V in 1..N) 
+        sum([At[T,A,V] : A in 1..K]) #=< 1
+    end,
+
+    % if an edge is used in one direction, it can not be used in the other direction (no swap)
+    % or in any direction for the time it is occupied
+    foreach(T in 1..Makespan-1, EID in 1..E) 
+        edgeid(EID,U,V,LU,UU),
+        edge(OPEID,V,U,_,_),
+        if V !== U then
+            Tmax = min(Makespan-1, T+UU-1),
+            sum([Pass[I,A,EE] : I in T..Tmax, A in 1..K, EE in [OPEID,EID]]) #=< 1
+        end
+    end,
+
+    % MOVEMENT
+
+    % if an agent is in a node, it needs to move through exactly one of the edges from that node
+    foreach(T in 1..Makespan-1, A in 1..K, V in 1..N) 
+        OutEdges = out_edges(V,E),
+        At[T,A,V] #=> sum([Pass[T,A,W] : W in OutEdges]) #= 1
+    end,
+
+    % if an agent is in a node, it must have entered through at least one edge
+    % it may have entered at different time, depending on the traversal time of the edge
+    foreach(T in 2..Makespan, A in 1..K, V in 1..N) 
+        InEdges = in_edges(V,E),
+        At[T,A,V] #=> sum([Pass[T-I,A,W] : W in InEdges, I in get_edges_time(T,W)]) #>= 1
+    end,
+
+    % if agent is using an edge, it must arrive to the connected node in the next timesteps
+    % it will be in the connected vertex in the range of the edge length
+    foreach(T in 1..Makespan-1, A in 1..K, EID in 1..E) 
+        edgeid(EID, _, V, LU, UU),
+        foreach (W in LU..UU)
+            if (T + W =< Makespan) then
+                Pass[T,A,EID] #=> At[T+W,A,V] #= 1
+            else
+                Pass[T,A,EID] = 0
+            end
+        end
+    end,
+
+    % if agent is using an edge, it must have been in the starting vertex
+    foreach(T in 1..Makespan-1, A in 1..K, EID in 1..E) 
+        edgeid(EID, V, _, _, _),
+        Pass[T,A,EID] #=> At[T,A,V]
+    end,
+
+    % SOC RESTRICTION
+
+    % Compute end times and weighted costs
+    ET = end_time(At, Pass, Agents, Makespan, N, E),
+    sum([ET[A,T] : A in 1..K, T in 1..Makespan]) #=< Delta.
+    
+
+    %  ET[A,T]=1 iff agent A is late at time T (i.e. A is not at its destination at T for T > "lower bound for agent path")
+    end_time(At, Pass, Agents, Makespan, N, E) = ET =>
+    ET = new_array(len(Agents), Makespan),
+    ET :: 0..1,
+
+    foreach (A in 1..len(Agents))
+        (Start, Goal) = Agents[A],
+        pessimistic_path_cost((Start,Goal),PathLength),
+
+        foreach (T in 1..PathLength+1)
+            ET[A,T] = 0  % agent is not late at T because T =< "lower bound for agent path"
+        end,
+
+        foreach (T in PathLength+2..Makespan-1)
+            #~ ET[A,T] #=> #~ ET[A,T+1],  % agent is not late at T and hence cannot be late at T+1
+        end,
+
+        foreach (T in 1..Makespan-1)
+            foreach(EID in 1..E) 
+                edgeid(EID, U, V, LU, UU),
+
+                if Pass[T,A,EID] !== 0 && V == Goal && U !== V then     % ignore edges that can not be traversed
+                    if T + UU > PathLength+1 then 
+                        Pass[T,A,EID] #=> ET[A,T+UU]     % agent is using edge hence must be late when he arrives
+                    end
+                end
+            end
+        end
+    end.

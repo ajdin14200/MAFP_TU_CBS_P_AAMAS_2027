@@ -1,0 +1,104 @@
+import sat.
+import aux.
+
+main([InstanceFile]) =>
+    printf("Solving %w instance file\n", InstanceFile),
+    load(InstanceFile),
+    Instance =  get_instance(),
+    time((Plans, Final_Cost) = find_plans(Instance)),
+    output(Plans, Final_Cost).
+
+find_plans(Instance) = (Plans, Pes_LB + Delta) =>
+    (N,E) = create_graph(Instance),
+    Agents = get_agents(Instance),
+    
+    Opt_LB = get_optimistic_mks(Agents) + 1,
+    Pes_LB = get_pessimistic_mks(Agents) + 1,
+
+    printf("LB opt - %w, pes - w %w\n", Opt_LB, Pes_LB),
+
+    between(0, 9999999, Delta),
+
+    printf("Building formula using delta %w\n", Delta),
+    Plans = create_formula(N, E, Agents, Opt_LB, Pes_LB, Delta),
+    printf("SAT solver started\n"),
+    solve(Plans).
+
+
+create_formula(N, E, Agents, Opt_LB, Pes_LB, Delta) = At =>
+    Makespan = Pes_LB + Delta,
+    K = len(Agents),
+
+    At = new_array(Makespan,K,N),
+    Pass = new_array(Makespan - 1,K,E),
+
+    % Initialize the first and last states
+    foreach (A in 1..K)    
+        (Start,Goal) = Agents[A],
+        At[1,A,Start] = 1,
+        At[Makespan,A,Goal] = 1,
+        foreach (V in 1..N)
+            if V !== Goal then
+                At[Makespan,A,V] = 0
+            end
+        end,
+        preprocess_mks(At, Pass, Makespan, Agents, N, E)
+    end,
+
+    % printf("At: %w\n",At),
+    % printf("Pass: %w\n",Pass),
+
+    At :: 0..1,
+    Pass :: 0..1,
+
+    % CONFLICTS
+
+    % vertex conflict
+    foreach(T in 1..Makespan, V in 1..N) 
+        sum([At[T,A,V] : A in 1..K]) #=< 1
+    end,
+
+    % if an edge is used in one direction, it can not be used in the other direction (no swap)
+    % or in any direction for the time it is occupied
+    foreach(T in 1..Makespan-1, EID in 1..E) 
+        edgeid(EID,U,V,LU,UU),
+        edge(OPEID,V,U,_,_),
+        if V !== U then
+            Tmax = min(Makespan-1, T+UU-1),
+            sum([Pass[I,A,EE] : I in T..Tmax, A in 1..K, EE in [OPEID,EID]]) #=< 1
+        end
+    end,
+
+    % MOVEMENT
+
+    % if an agent is in a node, it needs to move through exactly one of the edges from that node
+    foreach(T in 1..Makespan-1, A in 1..K, V in 1..N) 
+        OutEdges = out_edges(V,E),
+        At[T,A,V] #=> sum([Pass[T,A,W] : W in OutEdges]) #= 1
+    end,
+
+    % if an agent is in a node, it must have entered through at least one edge
+    % it may have entered at different time, depending on the traversal time of the edge
+    foreach(T in 2..Makespan, A in 1..K, V in 1..N) 
+        InEdges = in_edges(V,E),
+        At[T,A,V] #=> sum([Pass[T-I,A,W] : W in InEdges, I in get_edges_time(T,W)]) #>= 1
+    end,
+
+    % if agent is using an edge, it must arrive to the connected node in the next timesteps
+    % it will be in the connected vertex in the range of the edge length
+    foreach(T in 1..Makespan-1, A in 1..K, EID in 1..E) 
+        edgeid(EID, _, V, LU, UU),
+        foreach (W in LU..UU)
+            if (T + W =< Makespan) then
+                Pass[T,A,EID] #=> At[T+W,A,V] #= 1
+            else
+                Pass[T,A,EID] = 0
+            end
+        end
+    end,
+
+    % if agent is using an edge, it must have been in the starting vertex
+    foreach(T in 1..Makespan-1, A in 1..K, EID in 1..E) 
+        edgeid(EID, V, _, _, _),
+        Pass[T,A,EID] #=> At[T,A,V]
+    end.

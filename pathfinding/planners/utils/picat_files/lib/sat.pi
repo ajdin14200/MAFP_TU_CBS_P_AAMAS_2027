@@ -1,0 +1,468 @@
+module sat.
+import common_constr.
+
+% X #!= Y
+% X #/\ Y
+% X #< Y
+% X #<= Y
+% X #<=> Y
+% X #= Y
+% X #=< Y
+% X #=> Y
+% X #> Y
+% X #>= Y
+% X #\/ Y
+% X #^ Y
+%  #~ X
+% Vars::Exp
+% Vars notin Exp
+% acyclic(Vs,Es)
+% acyclic_d(Vs,Es)
+% all_different(FDVars)
+% all_different_except_0(FDVars)
+% all_distinct(FDVars)
+% assignment(FDVars1,FDVars2)
+% at_least(N,L,V)
+% at_most(N,L,V)
+% circuit(FDVars)
+% count(V,FDVars,N)
+% count(V,FDVars,Rel,N)
+% cumulative(Ss,Ds,Rs,Limit)
+% decreasing(L)
+% decreasing_strict(L)
+% diffn(RectangleList)
+% element(I,List,V)
+% element0(I,List,V)
+% exactly(N,L,V):
+% fd_disjoint(DVar1,DVar2)
+% fd_dom(FDVar) = List
+% fd_false(FDVar,Elm)
+% fd_max(FDVar) = Max
+% fd_min(FDVar) = Min
+% fd_min_max(FDVar,Min,Max)
+% fd_next(FDVar,Elm) = NextElm
+% fd_prev(FDVar,Elm) = PrevElm
+% fd_size(FDVar) = Size
+% fd_true(FDVar,Elm)
+% fd_vector_min_max(Min,Max)
+% global_cardinality(List,Pairs)
+% hcp(Vs,Es)
+% hcp(Vs,Es,K)
+% hcp_grid(A)
+% hcp_grid(A,Es)
+% hcp_grid(A,Es,K)
+% increasing(L)
+% increasing_strict(L)
+% lex_le(L_1,L_2)
+% lex_lt(L_1,L_2)
+% matrix_element(Matrix,I,J,V)
+% matrix_element0(Matrix,I,J,V)
+% new_dvar() = FDVar
+% new_fd_var() = FDVar
+% path(Vs,Es,Src,Dest)
+% path_d(Vs,Es,Src,Dest)
+% regular(X,Q,S,D,Q0,F)
+% scalar_product(A,X,Product)
+% scalar_product(A,X,Rel,Product)
+% scc(Vs,Es)
+% scc(Vs,Es,K)
+% scc_d(Vs,Es)
+% scc_d(Vs,Es,K)
+% scc_grid(A)
+% scc_grid(A,K)
+% serialized(Starts,Durations)
+% solve(Opts,Vars)(nondet)
+% solve(Vars)(nondet)
+% solve_all(Opts,Vars) = List
+% solve_all(Vars) = List
+% subcircuit(FDVars)
+% subcircuit_grid(A)
+% subcircuit_grid(A,K)
+% table_in(DVars,R)
+% table_notin(DVars,R)
+% tree(Vs,Es)
+% tree(Vs,Es,K)
+
+include "cp_sat_mip_smt.pi". % common built-ins for cp, sat, mip, and smt
+include "sat_mip_smt.pi".
+
+'::'(Vars,Domain) =>
+    bp.'_$_picat_in'(sat,Vars,Domain).
+
+% element(I,FDVars,V) => element(I,FDVars,V).
+element(I,FDVars,V) =>
+    (array(FDVars) -> to_list(FDVars) = List; List = FDVars),
+    (bp.dvar_or_int_list(List) -> true; handle_exception($dvar_or_int_list_expected(List), element)),
+    bp.'$element'(I,List,V,sat).
+
+% 0-based indexing
+%element0(I,FDVars,V) => element0(I,FDVars,V).
+element0(I,FDVars,V) =>
+    (array(FDVars) -> to_list(FDVars) = List; List = FDVars),
+    (bp.dvar_or_int_list(List) -> true; handle_exception($dvar_or_int_list_expected(List), element)),
+    bp.'$element0'(I,List,V,sat).
+
+% all_different(FDVars) => all_different(FDVars).
+all_different(FDVars) =>
+    (array(FDVars) -> to_list(FDVars) = List; List = FDVars),
+    bp.'$alldifferent'(List).
+
+% all_distinct(FDVars) => all_distinct(FDVars).
+all_distinct(FDVars) =>
+    all_different(FDVars).
+
+%
+% Requires that all non-zero values in Xs are distinct.
+%
+alldifferent_except_0(Xs) =>
+    all_different_except_0(Xs).
+
+all_different_except_0(Xs) =>
+    (list(Xs) ->
+        L = Xs
+    ;array(Xs) ->
+        L = to_list(Xs)
+    ;
+        handle_exception($dvar_or_int_collection_expected(Xs), all_different_except_0)
+    ),
+    bp.'$alldifferent_except_0'(L).
+
+/************************************************************************* 
+subcircuit(L):  L is a list or an array of variables X1,X2,...,Xn.
+L forms a subcircuit where Xi = j (j \= i) means that j is the successor of i 
+and Xi = i means that i is not in the circuit. No sub-cycles are allowed.
+*************************************************************************/
+subcircuit(L), list(L) =>
+    subcircuit_aux(L.to_array()).
+subcircuit(A), array(A) =>
+    subcircuit_aux(A).
+subcircuit(L) =>
+    handle_exception($array_or_list_expected(L), subcircuit).
+
+subcircuit_aux(A), subcircuit_no_loop(A) =>
+    circuit_aux(A).
+subcircuit_aux({V}) => V = 1.
+subcircuit_aux(A) =>
+    A.length = N,
+    A :: 1..N,
+    H = new_array(N,N),                          % H[I,I] = 1 means node I is not in the circuit
+    subcircuit_init_adj_matrix(H,A,N,MinK,MaxK),
+    H :: 0..1,
+    K :: MinK..MaxK,                             % number of vertices in the cycle
+    foreach (I in 1..N, J in 1..N)               % channel
+        if H[I,J] !== 0 then
+            H[I, J] #<=> (A[I] #= J)
+        end
+    end,
+    foreach (I in 1..N)                          % each node has exactly one incoming edge
+        sum([H[J,I] : J in 1..N]) #= 1        
+    end,
+    K #= sum([ #~H[I,I] : I in 1..N]),
+    (MinK > 2 ->
+        KGt2 = 1,
+        KGt1 = 1
+    ;
+        KGt2 #<=> (K #> 2),
+        KGt1 #<=> (K #> 1),
+        KGt2 #=> KGt1
+    ),
+     % ban sub-cycles
+    subcircuit_choose_start(H,N,KGt1,MinK,Start),     % Start[I] = 1 iff the cycle starts at vertex I
+    P = new_array(N),                            % each in-cycle vertex is mapped to a unique position
+    NB is round(log(2,N)+0.5),                   % number of bits needed by log encoding
+    Max is 2**NB-1,
+    P :: 0..Max,
+    foreach (I in 1..N)
+        if H[I,I] == 1 then
+            P[I] = 0
+        else
+            bp.sat_encode_dvar(P[I],_),           % get the log encoding
+            H[I,I] #<=> P[I] #= 0
+        end
+    end,
+    foreach (I in 1..N)
+        Start[I] #=> P[I] #= 1,
+        foreach (J in 1..N, I !== J, H[I,J] !== 0)
+            H[I,J] #=> #~H[J,J],
+            H[I,J] #=> #~H[I,I],
+            if I < J then
+                #~KGt2 #\/ #~H[I,J] #\/ #~H[J,I]    % no cycle of size 2
+            end,
+            entail_lfsr_succ(NB, #~Start[J], H[I,J], P[I], P[J])
+        end
+    end.
+
+subcircuit_no_loop(A) =>
+    N = len(A),
+    foreach (I in 1..N)
+        fd_false(A[I],I)
+    end.
+
+subcircuit_init_adj_matrix(H,A,N,MinK,MaxK) =>
+    MinK0 = 0,
+    MaxK0 = N,
+    foreach (I in 1..N)
+        (fd_false(A[I], I) -> MinK0 := MinK0+1; true),
+        (A[I] == I -> MaxK0 := MaxK0-1; true),
+        foreach (J in 1..N)                    % H is a subgraph of A
+            if fd_true(A[I],J) then
+                true
+            else
+                H[I,J] = 0
+            end
+        end
+    end,
+    MinK = MinK0,
+    MaxK = MaxK0.
+
+%
+% Start and HasStarted must follow the following pattern:
+%      Start = 0 ... 0 1 0 ... 0
+% HasStarted = 0 ... 0 1 1 ... 1
+%
+subcircuit_choose_start(H,N,KGt1,MinK,Start) =>
+    Start = new_array(N),                    % Start[I] = 1 iff the cycle starts at vertex I
+    Start :: 0..1,                          
+    foreach (I in 1..N)
+        H[I,I]  #=> #~Start[I]               % I is not in the cycle
+    end,
+    HasStarted = new_array(N),               % HasStarted[I] iff there exists I1 (I1 =< I) such that Start[I1]
+    HasStarted :: 0..1,
+    (MinK > 1 ->
+        HasStarted[N-MinK+1] #= 1
+    ;
+        KGt1 #=> HasStarted[N]
+    ),
+    #~H[1,1] #=> Start[1],
+    HasStarted[1] #<=> Start[1],
+    foreach (I in 2..N)
+        HasStarted[I-1] #=> HasStarted[I],
+        Start[I] #=> #~HasStarted[I-1],
+        Start[I] #=> HasStarted[I],
+        H[I,I] #\/ HasStarted[I-1] #\/ Start[I],                % (#~H[I,I] #/\ #~HasStarted[I-1]) #=> Start[I],
+        #~HasStarted[I] #\/ Start[I] #\/ HasStarted[I-1]        % (HasStarted[I] #/\ #~Start[I]) #=> HasStarted[I-1]
+    end.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% if B, then Y is the successor of X
+entail_lfsr_succ(NB,B1,B2,X,Y) =>
+    (var(X) ->
+        get_attr(X,'$bool_vars') = $log(_,VectX)
+    ;
+        VectX = new_array(NB),
+        dec_to_bin(X,1,NB,VectX)
+    ),
+    (var(Y) ->
+        get_attr(Y,'$bool_vars') = $log(_,VectY)
+    ;
+        VectY = new_array(NB),
+        dec_to_bin(Y,1,NB,VectY)
+    ),
+    entail_lfsr_succ_aux(B1,B2,VectX,VectY).
+
+dec_to_bin(_Val,I,NB,_Vect), I > NB => true.
+dec_to_bin(Val,I,NB,Vect) =>
+   Vect[I] = Val mod 2,
+   dec_to_bin(Val div 2, I+1, NB, Vect).
+
+bin_to_dec(_Vect,I,Res0,Res), I == 0 => Res = Res0.
+bin_to_dec(Vect,I,Res0,Res) =>
+    bin_to_dec(Vect, I-1, 2*Res0+Vect[I], Res).
+
+% B -> Y = succ(X)
+entail_lfsr_succ_aux(B1,B2,{X1,X2},Y) =>    % taps = {1,2}
+    Y = {Y1,Y2},
+    entail_equiv(B1,B2,Y2,X1),
+    entail_xor(B1,B2,Y1,X1,X2).
+entail_lfsr_succ_aux(B1,B2,{X1,X2,X3},Y) =>    % taps = {2,3}
+    Y = {Y1,Y2,Y3},
+    entail_equiv(B1,B2,Y3,X2),
+    entail_equiv(B1,B2,Y2,X1),
+    entail_xor(B1,B2,Y1,X2,X3).
+entail_lfsr_succ_aux(B1,B2,{X1,X2,X3,X4},Y) =>    % taps = {3,4}
+    Y = {Y1,Y2,Y3,Y4},
+    entail_equiv(B1,B2,Y4,X3),
+    entail_equiv(B1,B2,Y3,X2),
+    entail_equiv(B1,B2,Y2,X1),
+    entail_xor(B1,B2,Y1,X3,X4).
+entail_lfsr_succ_aux(B1,B2,{X1,X2,X3,X4,X5},Y) =>    % taps = {3,5}
+    Y = {Y1,Y2,Y3,Y4,Y5},
+    entail_equiv(B1,B2,Y5,X4),
+    entail_equiv(B1,B2,Y4,X3),
+    entail_equiv(B1,B2,Y3,X2),
+    entail_equiv(B1,B2,Y2,X1),
+    entail_xor(B1,B2,Y1,X3,X5).
+entail_lfsr_succ_aux(B1,B2,{X1,X2,X3,X4,X5,X6},Y) =>    % taps = {5,6}
+    Y = {Y1,Y2,Y3,Y4,Y5,Y6},
+    entail_equiv(B1,B2,Y6,X5),
+    entail_equiv(B1,B2,Y5,X4),
+    entail_equiv(B1,B2,Y4,X3),
+    entail_equiv(B1,B2,Y3,X2),
+    entail_equiv(B1,B2,Y2,X1),
+    entail_xor(B1,B2,Y1,X5,X6).
+entail_lfsr_succ_aux(B1,B2,{X1,X2,X3,X4,X5,X6,X7},Y) =>    % taps = {6,7}
+    Y = {Y1,Y2,Y3,Y4,Y5,Y6,Y7},
+    entail_equiv(B1,B2,Y7,X6),
+    entail_equiv(B1,B2,Y6,X5),
+    entail_equiv(B1,B2,Y5,X4),
+    entail_equiv(B1,B2,Y4,X3),
+    entail_equiv(B1,B2,Y3,X2),
+    entail_equiv(B1,B2,Y2,X1),
+    entail_xor(B1,B2,Y1,X6,X7).
+entail_lfsr_succ_aux(B1,B2,{X1,X2,X3,X4,X5,X6,X7,X8},Y) =>    % taps = {4,5,6,8}
+    Y = {Y1,Y2,Y3,Y4,Y5,Y6,Y7,Y8},
+    entail_equiv(B1,B2,Y8,X7),
+    entail_equiv(B1,B2,Y7,X6),
+    entail_equiv(B1,B2,Y6,X5),
+    entail_equiv(B1,B2,Y5,X4),
+    entail_equiv(B1,B2,Y4,X3),
+    entail_equiv(B1,B2,Y3,X2),
+    entail_equiv(B1,B2,Y2,X1),
+    entail_xor(B1,B2,Y1,X4,X5,X6,X8).
+entail_lfsr_succ_aux(B1,B2,{X1,X2,X3,X4,X5,X6,X7,X8,X9},Y) =>    % taps = {5,9}
+    Y = {Y1,Y2,Y3,Y4,Y5,Y6,Y7,Y8,Y9},
+    entail_equiv(B1,B2,Y9,X8),
+    entail_equiv(B1,B2,Y8,X7),
+    entail_equiv(B1,B2,Y7,X6),
+    entail_equiv(B1,B2,Y6,X5),
+    entail_equiv(B1,B2,Y5,X4),
+    entail_equiv(B1,B2,Y4,X3),
+    entail_equiv(B1,B2,Y3,X2),
+    entail_equiv(B1,B2,Y2,X1),
+    entail_xor(B1,B2,Y1,X5,X9).
+entail_lfsr_succ_aux(B1,B2,{X1,X2,X3,X4,X5,X6,X7,X8,X9,X10},Y) =>    % taps = {7,10}
+    Y = {Y1,Y2,Y3,Y4,Y5,Y6,Y7,Y8,Y9,Y10},
+    entail_equiv(B1,B2,Y10,X9),
+    entail_equiv(B1,B2,Y9,X8),
+    entail_equiv(B1,B2,Y8,X7),
+    entail_equiv(B1,B2,Y7,X6),
+    entail_equiv(B1,B2,Y6,X5),
+    entail_equiv(B1,B2,Y5,X4),
+    entail_equiv(B1,B2,Y4,X3),
+    entail_equiv(B1,B2,Y3,X2),
+    entail_equiv(B1,B2,Y2,X1),
+    entail_xor(B1,B2,Y1,X7,X10).
+entail_lfsr_succ_aux(B1,B2,{X1,X2,X3,X4,X5,X6,X7,X8,X9,X10,X11},Y) =>    % taps = {9,11}
+    Y = {Y1,Y2,Y3,Y4,Y5,Y6,Y7,Y8,Y9,Y10,Y11},
+    entail_equiv(B1,B2,Y11,X10),
+    entail_equiv(B1,B2,Y10,X9),
+    entail_equiv(B1,B2,Y9,X8),
+    entail_equiv(B1,B2,Y8,X7),
+    entail_equiv(B1,B2,Y7,X6),
+    entail_equiv(B1,B2,Y6,X5),
+    entail_equiv(B1,B2,Y5,X4),
+    entail_equiv(B1,B2,Y4,X3),
+    entail_equiv(B1,B2,Y3,X2),
+    entail_equiv(B1,B2,Y2,X1),
+    entail_xor(B1,B2,Y1,X9,X11).
+entail_lfsr_succ_aux(B1,B2,{X1,X2,X3,X4,X5,X6,X7,X8,X9,X10,X11,X12},Y) =>    % taps = {4,10,11,12}
+    Y = {Y1,Y2,Y3,Y4,Y5,Y6,Y7,Y8,Y9,Y10,Y11,Y12},
+    entail_equiv(B1,B2,Y12,X11),
+    entail_equiv(B1,B2,Y11,X10),
+    entail_equiv(B1,B2,Y10,X9),
+    entail_equiv(B1,B2,Y9,X8),
+    entail_equiv(B1,B2,Y8,X7),
+    entail_equiv(B1,B2,Y7,X6),
+    entail_equiv(B1,B2,Y6,X5),
+    entail_equiv(B1,B2,Y5,X4),
+    entail_equiv(B1,B2,Y4,X3),
+    entail_equiv(B1,B2,Y3,X2),
+    entail_equiv(B1,B2,Y2,X1),
+    entail_xor(B1,B2,Y1,X4,X10,X11,X12).
+entail_lfsr_succ_aux(B1,B2,{X1,X2,X3,X4,X5,X6,X7,X8,X9,X10,X11,X12,X13},Y) =>    % taps = {8,11,12,13}
+    Y = {Y1,Y2,Y3,Y4,Y5,Y6,Y7,Y8,Y9,Y10,Y11,Y12,Y13},
+    entail_equiv(B1,B2,Y13,X12),
+    entail_equiv(B1,B2,Y12,X11),
+    entail_equiv(B1,B2,Y11,X10),
+    entail_equiv(B1,B2,Y10,X9),
+    entail_equiv(B1,B2,Y9,X8),
+    entail_equiv(B1,B2,Y8,X7),
+    entail_equiv(B1,B2,Y7,X6),
+    entail_equiv(B1,B2,Y6,X5),
+    entail_equiv(B1,B2,Y5,X4),
+    entail_equiv(B1,B2,Y4,X3),
+    entail_equiv(B1,B2,Y3,X2),
+    entail_equiv(B1,B2,Y2,X1),
+    entail_xor(B1,B2,Y1,X8,X11,X12,X13).
+entail_lfsr_succ_aux(B1,B2,{X1,X2,X3,X4,X5,X6,X7,X8,X9,X10,X11,X12,X13,X14},Y) =>    % taps = {2,12,13,14}
+    Y = {Y1,Y2,Y3,Y4,Y5,Y6,Y7,Y8,Y9,Y10,Y11,Y12,Y13,Y14},
+    entail_equiv(B1,B2,Y14,X13),
+    entail_equiv(B1,B2,Y13,X12),
+    entail_equiv(B1,B2,Y12,X11),
+    entail_equiv(B1,B2,Y11,X10),
+    entail_equiv(B1,B2,Y10,X9),
+    entail_equiv(B1,B2,Y9,X8),
+    entail_equiv(B1,B2,Y8,X7),
+    entail_equiv(B1,B2,Y7,X6),
+    entail_equiv(B1,B2,Y6,X5),
+    entail_equiv(B1,B2,Y5,X4),
+    entail_equiv(B1,B2,Y4,X3),
+    entail_equiv(B1,B2,Y3,X2),
+    entail_equiv(B1,B2,Y2,X1),
+    entail_xor(B1,B2,Y1,X2,X12,X13,X14).
+
+% B => X = Y
+% i.e., (~B \/ ~X \/ Y) /\ (~B \/ X \/ ~Y)
+entail_equiv(B1,B2,X,Y) =>
+    #~B1 #\/ #~B2 #\/ #~X #\/ Y,
+    #~B1 #\/ #~B2 #\/ X #\/ #~Y.
+
+% B => Y = X1 ^ X2
+entail_xor(B1,B2,Y,X1,X2) =>
+    #~B1 #\/ #~B2 #\/ #~Y #\/ X1 #\/ X2,       % 1100 1
+    #~B1 #\/ #~B2 #\/ Y #\/ #~X1 #\/ X2,       % 1010 1
+    #~B1 #\/ #~B2 #\/ Y #\/ X1 #\/ #~X2,       % 1001 1
+    #~B1 #\/ #~B2 #\/ #~Y #\/ #~X1 #\/ #~X2.   % 1111 1
+
+% B => Y = X1 ^ X2 ^ X3 ^ X4
+entail_xor(B1,B2,Y,X1,X2,X3,X4) =>
+    #~B1 #\/ #~B2 #\/ #~Y #\/ X1 #\/ X2 #\/ X3 #\/ X4,
+    #~B1 #\/ #~B2 #\/ Y #\/ #~X1 #\/ X2 #\/ X3 #\/ X4,
+    #~B1 #\/ #~B2 #\/ Y #\/ X1 #\/ #~X2 #\/ X3 #\/ X4,
+    #~B1 #\/ #~B2 #\/ #~Y #\/ #~X1 #\/ #~X2 #\/ X3 #\/ X4,
+    #~B1 #\/ #~B2 #\/ Y #\/ X1 #\/ X2 #\/ #~X3 #\/ X4,
+    #~B1 #\/ #~B2 #\/ #~Y #\/ #~X1 #\/ X2 #\/ #~X3 #\/ X4,
+    #~B1 #\/ #~B2 #\/ #~Y #\/ X1 #\/ #~X2 #\/ #~X3 #\/ X4,
+    #~B1 #\/ #~B2 #\/ Y #\/ #~X1 #\/ #~X2 #\/ #~X3 #\/ X4,
+    #~B1 #\/ #~B2 #\/ Y #\/ X1 #\/ X2 #\/ X3 #\/ #~X4,
+    #~B1 #\/ #~B2 #\/ #~Y #\/ #~X1 #\/ X2 #\/ X3 #\/ #~X4,
+    #~B1 #\/ #~B2 #\/ #~Y #\/ X1 #\/ #~X2 #\/ X3 #\/ #~X4,
+    #~B1 #\/ #~B2 #\/ Y #\/ #~X1 #\/ #~X2 #\/ X3 #\/ #~X4,
+    #~B1 #\/ #~B2 #\/ #~Y #\/ X1 #\/ X2 #\/ #~X3 #\/ #~X4,
+    #~B1 #\/ #~B2 #\/ Y #\/ #~X1 #\/ X2 #\/ #~X3 #\/ #~X4,
+    #~B1 #\/ #~B2 #\/ Y #\/ X1 #\/ #~X2 #\/ #~X3 #\/ #~X4,
+    #~B1 #\/ #~B2 #\/ #~Y #\/ #~X1 #\/ #~X2 #\/ #~X3 #\/ #~X4.
+
+% solve(Vars) => solve(Vars).
+solve(Vars) => solve([],Vars).
+
+% solve(Options,Vars) => solve(Options,Vars)
+solve(Options,Vars) =>
+    (bp.dvar_or_int_list(Vars) ->
+        VList = Vars
+    ;
+        VList = vars(Vars),
+        (bp.dvar_or_int_list(VList) ->
+            true
+        ;
+            handle_exception($free_var_not_allowed(Vars), solve)
+        )
+    ),
+    (select($report(Call), Options,Options1) ->
+        Options2 = [$report('$dyna_eval_pred'(['$picat_top_level'],Call))|Options1]
+    ;
+        Options2 = Options
+    ),
+    (select($dump(File), Options2,Options3) ->
+        AtomFile = to_atom(File),
+        Options4 = [$dump(AtomFile)|Options3]
+    ;         
+        Options4 = Options2
+    ),        
+    bp.sat_solve(Options4,VList).    
+
+solve_all(Vars) = solve_all([],Vars).
+
+solve_all(Options,Vars) =
+    findall(Vars, solve(Options,Vars)).
+
