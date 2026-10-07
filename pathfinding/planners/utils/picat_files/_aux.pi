@@ -1,0 +1,138 @@
+create_graph(Instance) = (NrVertices, NrEdges) =>
+    $instance(G,_) = Instance,
+    cl_facts(G,[$neibs(+,-)]),
+    NrVertices = len(G),
+
+    Ed1 = [],
+    Ed2 = [],
+	EID = 1,
+
+	foreach(V in 1..NrVertices)
+		$neibs(V,Neibs),
+		foreach((W,L,U) in Neibs)
+			Ed1 := [$edge(EID, V, W, L, U)|Ed1],
+            Ed2 := [$edgeid(EID, V, W, L, U)|Ed2],
+			EID := EID + 1
+		end
+	end,
+
+    cl_facts(Ed1,[$edge(-,+,+,-,-)]),
+    cl_facts(Ed2,[$edgeid(+,-,-,-,-)]),
+    NrEdges = len(Ed1).
+
+get_optimistic_mks(Agents) = LB =>
+    get_optimistic_mks(Agents,0,LB).
+
+get_optimistic_mks([],LB0,LB) => LB = LB0.
+get_optimistic_mks([A|As],LB0,LB) =>
+    optimisitc_path_cost(A,Cost),
+	get_optimistic_mks(As,max(LB0,Cost),LB). 
+
+table (+,min)
+optimisitc_path_cost((V,V),Cost) => Cost = 0.
+optimisitc_path_cost((V,FV),Cost) => 
+    neibs(V,Neibs),
+    member((NextV,CostLU,_),Neibs),
+    optimisitc_path_cost((NextV,FV),Cost1),
+    Cost = Cost1+CostLU.
+
+get_pessimistic_mks(Agents) = LB =>
+    get_pessimistic_mks(Agents,0,LB).
+
+get_pessimistic_mks([],LB0,LB) => LB = LB0.
+get_pessimistic_mks([A|As],LB0,LB) =>
+    pessimistic_path_cost(A,Cost),
+	get_pessimistic_mks(As,max(LB0,Cost),LB). 
+
+table (+,min)
+pessimistic_path_cost((V,V),Cost) => Cost = 0.
+pessimistic_path_cost((V,FV),Cost) => 
+    neibs(V,Neibs),
+    member((NextV,_,CostUU),Neibs),
+    pessimistic_path_cost((NextV,FV),Cost1),
+    Cost = Cost1+CostUU.
+
+get_pessimistic_soc(Agents) = LB =>
+    get_pessimistic_soc(Agents,0,LB).
+
+get_pessimistic_soc([],LB0,LB) => LB = LB0.
+get_pessimistic_soc([A|As],LB0,LB) =>
+    pessimistic_path_cost(A,Cost),
+	get_pessimistic_soc(As,LB0 + Cost,LB). 
+
+get_agents(Instance) = A =>
+    $instance(_,A) = Instance.
+
+out_edges(V,E) = OutEdges =>
+    $neibs(V,Neibs),
+    ETMP = [],
+    foreach((W,_,_) in Neibs)
+        edge(EID,V,W,_,_),
+        ETMP := [EID] ++ ETMP
+	end,
+	OutEdges = ETMP.
+
+% NOTE: the graph is undirected!
+in_edges(V,E) = InEdges =>
+    $neibs(V,Neibs),
+    ETMP = [],
+    foreach((W,_,_) in Neibs)
+        edge(EID,W,V,_,_),
+        ETMP := [EID] ++ ETMP
+	end,
+	InEdges = ETMP.
+
+preprocess_mks(At, Pass, Makespan, Agents, Vertices, Edges) =>
+    foreach(A in 1..len(Agents), V in 1..Vertices)
+        (Start,Goal) = Agents[A],
+        optimisitc_path_cost((Start,V),OpCost),
+        pessimistic_path_cost((V,Goal),PesCost),
+        
+        foreach(T in 1..min(Makespan,OpCost))
+            At[T,A,V] = 0
+        end,
+
+        foreach(T in Makespan..-1..max(1,Makespan-PesCost+1))
+            At[T,A,V] = 0
+        end
+    end,
+
+    foreach (T in 1..Makespan-1, A in 1..len(Agents), E in 1..Edges)
+        edgeid(E,U,_,_,_),
+        if At[T,A,U] == 0 then
+            Pass[T,A,E] = 0
+        end
+    end.
+
+preprocess_soc(At, Pass, Makespan, Delta, Agents, Vertices, Edges) =>
+    foreach(A in 1..len(Agents), V in 1..Vertices)
+        (Start,Goal) = Agents[A],
+        optimisitc_path_cost((Start,V),OpCost),
+        pessimistic_path_cost((V,Goal),PesCost),
+        pessimistic_path_cost((Start,Goal),SPCost),
+        
+        foreach(T in 1..min(Makespan,OpCost))
+            At[T,A,V] = 0
+        end,
+
+        foreach(T in SPCost+Delta+1..-1..max(1,SPCost+Delta-PesCost+2))
+            %printf("BC %w can not be in %w at %w\n", A,V,T),
+            At[T,A,V] = 0
+        end
+    end,
+
+    foreach (T in 1..Makespan-1, A in 1..len(Agents), E in 1..Edges)
+        edgeid(E,U,_,_,_),
+        if At[T,A,U] == 0 then
+            Pass[T,A,E] = 0
+        end
+    end.
+
+get_edges_time(T,EID) = Times =>
+    edgeid(EID,_,_,LU,UU),
+    Times = min(LU,T)..min(UU,T-1).
+    %printf("EID %w, %w, %w - %w, %w\n", EID,T,LU,UU,Times).
+
+output(Plans, Cost) =>
+    %printf("%w\n",Plans),
+    printf("Cost %w\n", Cost).

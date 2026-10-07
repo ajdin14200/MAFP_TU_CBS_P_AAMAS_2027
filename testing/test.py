@@ -3,18 +3,29 @@
 Methods:
   CBS_TU, SAT, CBS_P, CBS_k, EECBS_TU, EECBS_P, EECBS_k
 
-Example:
-python test_paper_methods_all.py --map maps/benchmark/empty-16-16.map \
-    --picat-dir path/to/MAPF-TU/picat --instances 10 --agents 20 \
-    --uncertainty 1 --k 0.7 --time-limit 300 --seed 0
+Example (run from the repository root):
+python -m pathfinding.testing.test --map maps/benchmark/empty.map \
+    --instances 10 --agents 20 --uncertainty 1 --k 0.7 \
+    --time-limit 300 --seed 0
 """
 import argparse
 import csv
 import random
+from pathlib import Path
 
 from pathfinding.planners.cbstu import CBSTUPlanner
 from pathfinding.planners.utils.tu_problem import TimeUncertaintyProblem
 from pathfinding.planners.picat_sat_runner import PicatSATPlanner
+
+# Picat/SAT files distributed with the repository.
+# test.py is in pathfinding/testing/, hence parents[1] is pathfinding/.
+PICAT_DIR = (
+        Path(__file__).resolve().parents[1]
+        /"pathfinding"
+        / "planners"
+        / "utils"
+        / "picat_files"
+)
 
 
 def make_instance(map_path, agents, uncertainty, seed):
@@ -58,10 +69,16 @@ def solve_eecbs_p(problem, k, limit):
         compute_optimal_policy=True, k_safe=k)
 
 
-def solve_sat(problem, picat_dir, limit, instance_name):
+def solve_sat(problem, limit, instance_name):
+    """Convert the TU instance to Picat format and solve makespan (mks)."""
     return PicatSATPlanner(
-        problem, picat_dir=picat_dir, objective="mks"
-    ).find_solution(time_lim=limit, instance_name=instance_name)
+        problem,
+        picat_dir=PICAT_DIR,
+        objective="mks",
+    ).find_solution(
+        time_lim=limit,
+        instance_name=instance_name,
+    )
 
 
 def normal_row(instance_name, method, s):
@@ -77,15 +94,13 @@ def main():
     ap = argparse.ArgumentParser(
         description="Generate random MAPF-TU instances and run all paper methods.")
     ap.add_argument("--map", required=True, help="MovingAI .map file.")
-    ap.add_argument("--picat-dir", required=True,
-                    help="Directory containing picat, mks.pi and aux.pi.")
     ap.add_argument("--instances", type=int, default=10)
     ap.add_argument("--agents", type=int, default=10)
     ap.add_argument("--uncertainty", type=int, default=1)
     ap.add_argument("--k", type=float, default=0.7)
     ap.add_argument("--time-limit", type=float, default=300)
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--output", default="test_results.csv")
+    ap.add_argument("--output", default="results/test_results.csv")
     args = ap.parse_args()
 
     if not 0.0 <= args.k <= 1.0:
@@ -106,7 +121,7 @@ def main():
         methods = [
             ("CBS_TU", lambda: solve_cbs_tu(problem, args.time_limit)),
             ("SAT", lambda: solve_sat(
-                problem, args.picat_dir, args.time_limit, name)),
+                problem, args.time_limit, name)),
             ("CBS_P", lambda: solve_cbs_p(problem, 1.0, args.time_limit)),
             ("CBS_k", lambda: solve_cbs_p(problem, args.k, args.time_limit)),
             ("EECBS_TU", lambda: solve_eecbs_tu(problem, args.time_limit)),

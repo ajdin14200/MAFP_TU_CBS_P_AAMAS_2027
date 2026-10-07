@@ -57,7 +57,7 @@ class PicatSATPlanner:
 
         self.picat_executable = self.picat_dir / "picat"
         self.encoding_file = self.picat_dir / f"{self.objective}.pi"
-        self.aux_file = self.picat_dir / "aux.pi"
+        self.aux_file = self.picat_dir / "_aux.pi"
 
         missing = [
             str(path)
